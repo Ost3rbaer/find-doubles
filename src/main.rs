@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt; // FIXME
 // globset and regex later
@@ -8,10 +9,10 @@ use std::os::unix::fs::MetadataExt; // FIXME
 
 fn main() {
     let mut files: Vec<FileInfo> = Vec::new();
-    let min_size = 0; // replace with your desired minimum size
+    let min_size = 64*1024; // replace with your desired minimum size
     let max_size = std::u64::MAX; // replace with your desired maximum size
     let hard_linked = false; // replace with your desired value
-    let exclude_pattern: Option<glob::Pattern> = None; // replace with your desired exclude pattern
+    let exclude_pattern: Option<glob::Pattern> = Some(glob::Pattern::new("unins*").unwrap()); // replace with your desired exclude pattern
 
     let mut source_dirs: Vec<PathBuf> = vec![]; // replace with your desired directories
     let mut all_dirs: Vec<PathBuf> = vec![]; // replace with your desired directories
@@ -20,11 +21,15 @@ fn main() {
     for dir in source_dirs {
         find_files(&dir, &mut all_dirs, &mut files, min_size, max_size, hard_linked, &exclude_pattern);
     }
+    files.sort_unstable_by_key(|file| file.size);
+	/*
     for file in &files {
       println!("{:?}",file);
 //      println!("{} {} {} {}</>{}",file.id,file.nlink,file.size,all_dirs[file.dir_index].to_str().unwrap(), file.name);
     }
+	*/
     println!("{} files, {} directories", files.len(), all_dirs.len());
+    let common_finder=CommonFinder::new(files, |f| f.size);
 }
 
 fn find_files(
@@ -38,7 +43,8 @@ fn find_files(
 ) {
     if let Ok(entries) = fs::read_dir(dir) {
     let dir_index = all_dirs.len();
-    all_dirs.push(PathBuf::from(dir.to_str().unwrap()));
+ //   all_dirs.push(PathBuf::from(dir.to_str().unwrap()));
+    all_dirs.push(dir.clone());
 
         for entry in entries {
 //    println!("{:?}", entry);
@@ -51,19 +57,20 @@ fn find_files(
 //    println!("{:?}", metadata);
                 // do not follow symbolic links, junctions or mount points
                 if metadata.is_symlink() {
+					println!("skipping symlink {}",path.display());
                     continue;
                 }
 
 		if let Some(ignore_pattern) = exclude_pattern {
-		  if ignore_pattern.matches(&path.to_string_lossy().into_owned()) {
+		  if ignore_pattern.matches(&path.file_name().unwrap().to_string_lossy().into_owned()) {
 		     continue;
 		  }
 		}
-                if metadata.is_file()
+                if metadata.is_file() {
                     //&& metadata.permissions().readonly()
-                    && metadata.len() >= min_size
-                    && metadata.len() <= max_size
-                {
+                    if metadata.len() < min_size || metadata.len() > max_size {
+						 continue;
+					 }
 #[cfg(unix)]
                 if !(hard_linked || metadata.nlink() == 1) {
 		continue;
@@ -83,12 +90,64 @@ fn find_files(
                     files.push(file_info);
                 } else if metadata.is_dir() {
 		// recurse here
+		// check for ignore mark
+		let mut ignore_path=path.clone();
+		ignore_path.push(".keep_duplicates");
+		if let Ok(_) = fs::symlink_metadata(&ignore_path) {
+					println!("skipping {} - has .keep_duplicates",path.display());
+		} else {
         find_files(&path, all_dirs, files, min_size, max_size, hard_linked, &exclude_pattern);
+		}
                 }
             }
         }
     }
 }
+
+struct CommonFinder<T,K,F>
+where
+    F: Fn(&T) -> K,
+    K: Ord {
+    accessor :F,
+    cursor: usize,
+    len: usize,
+    refindex: usize,
+    data: Vec<T>,
+	}
+
+
+impl<T,K,F> CommonFinder<T,K,F> where
+    F: Fn(&T) -> K,
+    K: Ord {
+ pub fn new(mut data:Vec<T>, accessor: F) -> Self {
+   data.sort_unstable_by_key(|elem| accessor(elem));
+   Self{ cursor:0, refindex:0, len:data.len(), accessor, data }
+ }
+ pub fn has_duplicates(&mut self) -> bool {
+   while self.cursor + 1 < self.len {
+    if (self.accessor)(&self.data[self.cursor]) == (self.accessor)(&self.data[self.cursor+1]) {
+      self.refindex = self.cursor;
+      return true
+    }
+    self.cursor += 1;
+   }
+   false
+ }
+}
+
+/*
+impl<T,K,F> Iterator<Item = &T> for CommonFinder<T,K,F> where
+    F: Fn(&T) -> K,
+    K: Ord {
+    fn next(&mut self) -> Option<Self::Item> {
+      if (self.accessor)(&self.data[self.cursor]) != (self.accessor)(&self.data[self.refindex]) {
+        return None;
+      }
+      self.cursor += 1;
+      Some(&self.data[self.cursor-1])
+   }
+}
+*/
 
 #[derive(Debug)]
 #[allow(dead_code)]
