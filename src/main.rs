@@ -1,33 +1,88 @@
 use std::fs;
 use std::path::PathBuf;
 use std::io::Write;
+use clap::Parser;
+
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt; // FIXME
 // globset and regex later
 //extern crate glob;
 //use glob::Pattern;
 
+#[derive(Parser,Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+	/// mimimum file size
+//	#[arg(short='m',long, name="FILE_MIN_SIZE", default_value_t = 65536)]
+	#[arg(short='m',long, value_name="BYTES", default_value_t = 65536)]
+	min_size: u64,
+	
+	/// maximum file size
+//	#[arg(short='M',long, name="FILE_MAX_SIZE", default_value_t = std::u64::MAX)]
+	#[arg(short='M',long, value_name="BYTES", default_value_t = std::u64::MAX)]
+	max_size: u64,
+
+	/// Directory to be scanned, can be repeated
+	#[arg(short,long)]
+	directories: Vec<std::path::PathBuf>,
+
+	/// files to be excluded from scan, GLOB syntax
+	#[arg(short='e',long, value_name="GLOB")]
+	exclude_files: Vec<glob::Pattern>,
+	
+	/// directories to be excluded from scan, GLOB syntax
+	#[arg(short='E',long, value_name="GLOB")]
+	exclude_dirs: Vec<glob::Pattern>,
+	
+	/// print matched files
+	#[arg(short='p',long)]
+	print_files : bool,
+	
+	/// print directories
+	#[arg(short='P',long)]
+	print_directories : bool,
+	
+}
+
 fn main() {
+	let mut args = Args::parse();
+	#[cfg(windows)]
+	{
+		if args.exclude_dirs.is_empty() {
+			args.exclude_dirs.push(glob::Pattern::new("WINDOWS").unwrap());
+		}
+		if args.exclude_files.is_empty() {
+			args.exclude_files.push(glob::Pattern::new("unins*").unwrap());
+		}
+	}
+	if args.directories.is_empty() {
+        args.directories.push(PathBuf::from("."));
+	}
+	/*
+	println!("{:?}", args);
+	if args.min_size != args.max_size {
+		return;
+	}
+	*/
     let mut files: Vec<FileInfo> = Vec::new();
-    let min_size = 64*1024; // replace with your desired minimum size
-    let max_size = std::u64::MAX; // replace with your desired maximum size
-    let hard_linked = false; // replace with your desired value
-    let exclude_pattern: Option<glob::Pattern> = Some(glob::Pattern::new("unins*").unwrap()); // replace with your desired exclude pattern
 
-    let mut source_dirs: Vec<PathBuf> = vec![]; // replace with your desired directories
-    let mut all_dirs: Vec<PathBuf> = vec![]; // replace with your desired directories
+    let mut all_dirs: Vec<PathBuf> = vec![];
 
-    source_dirs.push(PathBuf::from("."));
-    for dir in source_dirs {
-        find_files(&dir, &mut all_dirs, &mut files, min_size, max_size, hard_linked, &exclude_pattern);
+    for dir in args.directories {
+        find_files(&dir, &mut all_dirs, &mut files, args.min_size, args.max_size, &args.exclude_files, &args.exclude_dirs);
     }
     files.sort_unstable_by_key(|file| file.size);
-	/*
+	if args.print_files {
     for file in &files {
       println!("{:?}",file);
 //      println!("{} {} {} {}</>{}",file.id,file.nlink,file.size,all_dirs[file.dir_index].to_str().unwrap(), file.name);
     }
-	*/
+	}
+	if args.print_directories {
+    for dir in &all_dirs {
+      println!("{:?}",dir);
+    }
+	}
     println!("{} files, {} directories", files.len(), all_dirs.len());
     let common_finder=CommonFinder::new(files, |f| f.size);
 }
@@ -38,15 +93,15 @@ fn find_files(
     files: &mut Vec<FileInfo>,
     min_size: u64,
     max_size: u64,
-    hard_linked: bool,
-    exclude_pattern: &Option<glob::Pattern>,
+    exclude_files: &Vec<glob::Pattern>,
+    exclude_dirs: &Vec<glob::Pattern>,
 ) {
     if let Ok(entries) = fs::read_dir(dir) {
     let dir_index = all_dirs.len();
  //   all_dirs.push(PathBuf::from(dir.to_str().unwrap()));
     all_dirs.push(dir.clone());
 
-        for entry in entries {
+    'entries:    for entry in entries {
 //    println!("{:?}", entry);
             if let Ok(entry) = entry {
                 let path = entry.path();
@@ -61,9 +116,9 @@ fn find_files(
                     continue;
                 }
 
-		if let Some(ignore_pattern) = exclude_pattern {
+		for ignore_pattern in exclude_files {
 		  if ignore_pattern.matches(&path.file_name().unwrap().to_string_lossy().into_owned()) {
-		     continue;
+		     continue 'entries;
 		  }
 		}
                 if metadata.is_file() {
@@ -72,7 +127,7 @@ fn find_files(
 						 continue;
 					 }
 #[cfg(unix)]
-                if !(hard_linked || metadata.nlink() == 1) {
+                if !(true || metadata.nlink() == 1) {
 		continue;
 		}
                     let file_info = FileInfo {
@@ -90,13 +145,18 @@ fn find_files(
                     files.push(file_info);
                 } else if metadata.is_dir() {
 		// recurse here
+		for ignore_pattern in exclude_dirs {
+		  if ignore_pattern.matches(&path.file_name().unwrap().to_string_lossy().into_owned()) {
+		     continue 'entries;
+		  }
+		}
 		// check for ignore mark
 		let mut ignore_path=path.clone();
 		ignore_path.push(".keep_duplicates");
 		if let Ok(_) = fs::symlink_metadata(&ignore_path) {
 					println!("skipping {} - has .keep_duplicates",path.display());
 		} else {
-        find_files(&path, all_dirs, files, min_size, max_size, hard_linked, &exclude_pattern);
+        find_files(&path, all_dirs, files, min_size, max_size, &exclude_files, &exclude_dirs);
 		}
                 }
             }
