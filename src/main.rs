@@ -167,9 +167,52 @@ fn main() {
 							new_link_save += files[refi].size;
 						}
 				} else {
-					println!("{}: {refi}..{cur}",files[refi].size);
+					// group runs
+					#[derive(Debug)]
+					struct FileRun {
+						first: usize,
+						len: usize,
+						peek_hash: u128,
+					};
+					let mut runs : Vec<FileRun> = Vec::new();
+					let mut run_start=refi;
 					for i in refi..cur {
-						println!("{i} {:?}", files[i]);
+						if files[i].id != files[run_start].id {
+							runs.push(FileRun{ first: run_start, len: i-run_start, peek_hash : 0 });
+							run_start = i;
+						}
+					}
+
+					runs.push(FileRun{ first: run_start, len: cur-run_start, peek_hash : 0 });
+					println!("runs between {refi} and {cur}: {:?}", runs);
+					if runs.len() == 2 {
+						if fcmp(all_dirs.get(files[runs[0].first].dir_index).unwrap(),
+								&files[runs[0].first].name,
+								all_dirs.get(files[runs[1].first].dir_index).unwrap(),
+								&files[runs[1].first].name,
+								files[refi].size) {
+									println!("merging runs {:?} and {:?}", runs[0], runs[1]);
+								let (src, dst, len) = if runs[1].len > runs[0].len {
+									(runs[0].first, runs[1].first, runs[0].len)
+								} else {
+									(runs[1].first, runs[0].first, runs[1].len)
+								};
+								println!("run merge {src}[{len}]->{dst}");
+								for i in src .. src+len {
+									link( all_dirs.get(files[dst].dir_index).unwrap(),
+										  &files[dst].name,
+										  all_dirs.get(files[i].dir_index).unwrap(),
+										  &files[i].name);
+									linked += 1;
+									new_link_save += files[refi].size;
+								}
+						}
+					} else {
+						// peek hash first
+						println!("{}: {refi}..{cur}",files[refi].size);
+						for i in refi..cur {
+							println!("{i} {:?}", files[i]);
+						}
 					}
 				}
 			}
@@ -191,7 +234,7 @@ fn link(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) {
 	file_name1.push(name1);
     let mut file_name2 = dir2.clone();
 	file_name2.push(name2);
-	println!("linking {:?} -> {:?}",file_name2 , file_name1);
+	println!("linking {:?} -> {:?}",file_name1 , file_name2);
 }
 // TODO: error handling, consider anyhow
 fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> bool {
