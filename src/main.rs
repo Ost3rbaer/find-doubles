@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,15 @@ struct Args {
     #[arg(short = 'E', long, value_name = "GLOB")]
     exclude_dirs: Vec<glob::Pattern>,
 
-    /// print matched files
+    /// write list of duplicates to CSV file
+    #[arg(short, long, value_name = "FILE.csv")]
+    csv_export: Option<std::path::PathBuf>,
+
+    /// report duplicate files
+    #[arg(short, long)]
+    report_duplicates: bool,
+
+    /// print files that matched filter
     #[arg(short = 'p', long)]
     print_files: bool,
 
@@ -82,6 +90,20 @@ fn main() {
     let mut files: Vec<FileInfo> = Vec::new();
     let mut all_dirs: Vec<PathBuf> = vec![];
 
+    let mut csv_file: Option<File> = if let Some(csv_path) = args.csv_export {
+        match File::create(&csv_path) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                println!("{:?} creating {:?}, CSV output is not written", e, csv_path);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref mut f) = csv_file {
+        writeln!(f, "File,Size,Duplicate").expect("csv write");
+    }
     let start = Instant::now();
     for dir in args.directories {
         find_files(
@@ -144,6 +166,39 @@ fn main() {
     let mut processed_size = 0;
     let mut last_size_percent = 0;
     let mut last_file_percent = 0;
+    macro_rules! process_duplicate {
+        ($dir : expr, $file : expr, $index : expr) => {
+            if let Some(ref mut f) = csv_file {
+                writeln!(
+                    f,
+                    "\"{}/{}\",{},\"{}/{}\"",
+                    $dir.display(),
+                    $file,
+                    &files[$index].size,
+                    all_dirs.get(files[$index].dir_index).unwrap().display(),
+                    &files[$index].name,
+                )
+                .expect("csv write");
+            }
+            if args.report_duplicates {
+                println!(
+                    "\"{}/{}\" => \"{}/{}\"",
+                    $dir.display(),
+                    $file,
+                    all_dirs.get(files[$index].dir_index).unwrap().display(),
+                    &files[$index].name,
+                );
+            }
+            if args.link_duplicates {
+                link(
+                    $dir,
+                    $file,
+                    all_dirs.get(files[$index].dir_index).unwrap(),
+                    &files[$index].name,
+                );
+            }
+        };
+    }
     // merge tow runs of hard-linked files, all files of $merge_run are linked to $ref_run_start
     macro_rules! merge_runs {
         ($ref_run_start : expr, $merge_run_start : expr, $len : expr) => {
@@ -160,12 +215,7 @@ fn main() {
             );
             if args.link_duplicates {
                 for i in $merge_run_start..$merge_run_start + $len {
-                    link(
-                        &dir,
-                        &file,
-                        all_dirs.get(files[i].dir_index).unwrap(),
-                        &files[i].name,
-                    );
+                    process_duplicate!(&dir, &file, i);
                 }
             }
             linked += $len;
@@ -183,14 +233,11 @@ fn main() {
                 &files[$file2_i].name,
                 files[$file1_i].size,
             ) {
-                if args.link_duplicates {
-                    link(
-                        all_dirs.get(files[$file1_i].dir_index).unwrap(),
-                        &files[$file1_i].name,
-                        all_dirs.get(files[$file2_i].dir_index).unwrap(),
-                        &files[$file2_i].name,
-                    );
-                }
+                process_duplicate!(
+                    all_dirs.get(files[$file1_i].dir_index).unwrap(),
+                    &files[$file1_i].name,
+                    $file2_i
+                );
                 linked += 1;
                 new_link_save += files[$file1_i].size;
             }
@@ -204,10 +251,12 @@ fn main() {
         let size_percent = 100 * processed_size / total_size;
         if file_percent != last_file_percent || size_percent != last_size_percent {
             print!(
-                "progress: {file_percent}% ({cur}/{len_1}) files, {size_percent}% ({}/{}) data  \r",
+                "progress: current size {}, {file_percent}% ({cur}/{len_1}) files, {size_percent}% ({}/{}) data    \r",
+				kmgt(files[cur].size),
                 kmgt(processed_size),
                 kmgt(total_size)
             );
+			_ = std::io::stdout().flush();
             last_file_percent = file_percent;
             last_size_percent = size_percent;
         }
@@ -221,8 +270,6 @@ fn main() {
         let refi = cur;
         #[cfg(not(windows))]
         {
-            processed_size += files[cur].size;
-            processed_size += files[cur + 1].size;
             cur += 2;
         }
         #[cfg(windows)]
@@ -242,6 +289,7 @@ fn main() {
             link_test_time += link_test_start.elapsed();
         }
         files_with_equals += cur - refi;
+		processed_size += ((cur-refi) as u64)*files[refi].size;
         #[cfg(debug_assertions)]
         println!("{refi}..{cur}@{:}", files[refi].size);
         // now files[ref..cur-1] have the same size and their id (inode) is known
@@ -463,19 +511,23 @@ fn kmgt(bytes: u64) -> String {
         return format!("{bytes} B");
     }
     if bytes < 1024 * 1024 {
-        let f = (bytes % 1024) * 10 / 1204;
-        return format!("{}.{f} kiB", bytes / 1024);
+		let mag = 1024;
+        let f = (bytes % mag) * 10 / mag;
+        return format!("{}.{f} kiB", bytes / mag);
     }
     if bytes < 1024 * 1024 * 1024 {
-        let f = (bytes % (1024 * 1024)) * 10 / (1204 * 1024);
-        return format!("{}.{f} MiB", bytes / (1024 * 1024));
+		let mag = 1024 * 1024;
+        let f = (bytes % mag) * 10 / mag;
+        return format!("{}.{f} MiB", bytes / mag);
     }
     if bytes < 1024 * 1024 * 1024 * 1024 {
-        let f = (bytes % (1024 * 1024 * 1024)) * 10 / (1204 * 1024 * 1024);
-        return format!("{}.{f} GiB", bytes / (1024 * 1024 * 1024));
+		let mag = 1024 * 1024 * 1024;
+        let f = (bytes % mag) * 10 / mag;
+        return format!("{}.{f} GiB", bytes / mag);
     }
-    let f = (bytes % (1024 * 1024 * 1024) * 1024) * 10 / (1204 * 1024 * 1024 * 1024);
-    format!("{}.{f} TiB", bytes / (1024 * 1024 * 1024 * 1024))
+	let mag = 1024 * 1024 * 1024 * 1024;
+    let f = (bytes % mag) * 10 / mag;
+    format!("{}.{f} TiB", bytes / mag)
 }
 
 // type FullHash has to match digest used in full_hash()
