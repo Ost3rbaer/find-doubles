@@ -455,7 +455,7 @@ fn main() {
                     // need stable sort here to keep longest run first
                     run_runs.sort_by_key(|r| r.hash);
                     // last sprint: check for run_runs with same hash
-                    // these files have same size, same peek_hash and same SHA2
+                    // these files have same size, same peek_hash and same full hash
                     // let's merge them
                     //println!("{:?}", run_runs);
                     let mut i = 1;
@@ -535,13 +535,7 @@ type FullHash = [u8; 32];
 
 /// compute full hash of file
 fn full_hash(dir: &PathBuf, name: &str, size: usize) -> Result<FullHash, std::io::Error> {
-    /*
-        use digest::Digest;
-        use meowhash::MeowHasher;
-        let mut hasher = MeowHasher::new();
-    */
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
 
     let buff_size: usize = if size > 65536 { 65536 } else { size as usize };
     let mut buffer = Vec::<u8>::with_capacity(buff_size);
@@ -563,7 +557,7 @@ fn full_hash(dir: &PathBuf, name: &str, size: usize) -> Result<FullHash, std::io
         pending -= target_size;
     }
     let hashvalue = hasher.finalize();
-    let x: [u8; 32] = hashvalue.as_slice().try_into().expect("Wrong length");
+    let x: [u8; 32] = *hashvalue.as_bytes();
     Ok(x)
 }
 
