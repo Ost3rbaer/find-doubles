@@ -437,7 +437,6 @@ fn main() {
                     match full_hash(
                         all_dirs.get(files[runs[i].first].dir_index).unwrap(),
                         &files[runs[i].first].name,
-                        files[runs[i].first].size as usize,
                     ) {
                         Ok(hash) => run_runs.push(RunRun {
                             first: runs[i].first,
@@ -531,38 +530,24 @@ fn kmgt(bytes: u64) -> String {
 }
 
 // type FullHash has to match digest used in full_hash()
+// and has to implement Ord, PartialOrd, and Eq for sorting
 type FullHash = [u8; 32];
 
 /// compute full hash of file
-fn full_hash(dir: &PathBuf, name: &str, size: usize) -> Result<FullHash, std::io::Error> {
+fn full_hash(dir: &PathBuf, name: &str) -> Result<FullHash, std::io::Error> {
     let mut hasher = blake3::Hasher::new();
-
-    let buff_size: usize = if size > 65536 { 65536 } else { size as usize };
-    let mut buffer = Vec::<u8>::with_capacity(buff_size);
     let mut file_name = dir.clone();
     file_name.push(name);
-    #[cfg(debug_assertions)]
-    println!("computing full hash of {:?}", file_name);
-    let mut file = File::open(file_name)?;
-    let mut pending = size as usize;
-    while pending > 0 {
-        let target_size: usize = if pending > buff_size {
-            buff_size
-        } else {
-            pending
-        };
-        unsafe { buffer.set_len(target_size) };
-        file.read_exact(&mut buffer)?;
-        hasher.update(&buffer);
-        pending -= target_size;
-    }
-    let hashvalue = hasher.finalize();
-    let x: [u8; 32] = *hashvalue.as_bytes();
-    Ok(x)
+	hasher.update_mmap(file_name)?;
+	Ok(*hasher.finalize().as_bytes())
 }
 
+// type PeekHash has to match digest used in peek_hash()
+// and has to implement Ord, PartialOrd, and Eq for sorting
+type PeekHash = u128;
+
 /// compute hash of the first size bytes of file
-fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<u128, std::io::Error> {
+fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<PeekHash, std::io::Error> {
     // fastmurmur3 does not implement digest, hence we read all data in the buffer
     let mut buffer = Vec::<u8>::with_capacity(size);
     unsafe { buffer.set_len(size) };
