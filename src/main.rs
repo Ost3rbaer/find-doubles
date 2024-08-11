@@ -12,7 +12,7 @@ use std::os::unix::fs::MetadataExt;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// mimimum file size
+    /// minimum file size
     #[arg(short = 'm', long, value_name = "BYTES", default_value_t = 65536)]
     min_size: u64,
 
@@ -22,7 +22,7 @@ struct Args {
 
     /// Directory to be scanned, can be repeated
     #[arg(short, long)]
-    directories: Vec<std::path::PathBuf>,
+    directories: Vec<PathBuf>,
 
     /// files to be excluded from scan, GLOB syntax
     #[arg(short = 'e', long, value_name = "GLOB")]
@@ -34,7 +34,7 @@ struct Args {
 
     /// write list of duplicates to CSV file
     #[arg(short, long, value_name = "FILE.csv")]
-    csv_export: Option<std::path::PathBuf>,
+    csv_export: Option<PathBuf>,
 
     /// report duplicate files
     #[arg(short, long)]
@@ -75,7 +75,7 @@ fn main() {
             args.exclude_dirs
                 .push(glob::Pattern::new("WINDOWS").unwrap());
         }
-        // GOG uninstallers have a stupid locking mechanism that cause a dead-lock during
+        // GOG uninstallers have a stupid locking mechanism that cause a +deadlock during
         // uninstall when hard linked
         if args.exclude_files.is_empty() {
             args.exclude_files
@@ -83,7 +83,7 @@ fn main() {
             args.exclude_files.push(glob::Pattern::new("*.db").unwrap());
         }
     }
-    // use current dirsctory when no dirs were specified
+    // use current directory when no dirs were specified
     if args.directories.is_empty() {
         args.directories.push(PathBuf::from("."));
     }
@@ -441,7 +441,7 @@ fn main() {
                         Ok(hash) => run_runs.push(RunRun {
                             first: runs[i].first,
                             len: runs[i].len,
-                            hash: hash,
+                            hash,
                         }),
                         _ => (),
                     }
@@ -504,7 +504,7 @@ fn main() {
     }
 }
 
-/// nicely format number of bytes into human readable form
+/// nicely format number of bytes into human-readable form
 fn kmgt(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -570,8 +570,8 @@ fn link(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) {
     tmp_name2.push(name2.to_owned() + ".dbl");
     #[cfg(debug_assertions)]
     println!("linking {:?} -> {:?}", file_name1, file_name2);
-    _ = match std::fs::hard_link(file_name1, &tmp_name2) {
-        Ok(_) => std::fs::rename(tmp_name2, file_name2),
+    _ = match fs::hard_link(file_name1, &tmp_name2) {
+        Ok(_) => fs::rename(tmp_name2, file_name2),
         Err(e) => {
             _ = std::fs::remove_file(tmp_name2);
             Err(e)
@@ -627,7 +627,7 @@ fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> 
 /// provide a replacement for inodes as unique ids on windows
 // windows does not provide an inode
 // hard linked files can be identified by getting FindFirstFileName on them - linked files share that property
-// the following code is ugly due to the conversions needed between windows API and native Rust strings
+// the following code is ugly due to the conversions needed between Windows API and native Rust strings
 #[cfg(windows)]
 fn windows_id(dir: &PathBuf, name: &str) -> FileId {
     use windows::{
@@ -643,7 +643,7 @@ fn windows_id(dir: &PathBuf, name: &str) -> FileId {
     let mut buffer = Vec::<u16>::with_capacity(cb_buffer as usize);
     let lp_buffer = PWSTR(buffer.as_mut_ptr());
     full_name.push(name);
-    // that's awfull
+    // that's awful
     let wide_name: Vec<u16> = OsStr::new(full_name.to_str().unwrap())
         .encode_wide()
         .chain(once(0))
