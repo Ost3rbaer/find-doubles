@@ -256,7 +256,7 @@ fn main() {
                 kmgt(processed_size),
                 kmgt(total_size)
             );
-			_ = std::io::stdout().flush();
+            _ = std::io::stdout().flush();
             last_file_percent = file_percent;
             last_size_percent = size_percent;
         }
@@ -289,7 +289,7 @@ fn main() {
             link_test_time += link_test_start.elapsed();
         }
         files_with_equals += cur - refi;
-		processed_size += ((cur-refi) as u64)*files[refi].size;
+        processed_size += ((cur - refi) as u64) * files[refi].size;
         #[cfg(debug_assertions)]
         println!("{refi}..{cur}@{:}", files[refi].size);
         // now files[ref..cur-1] have the same size and their id (inode) is known
@@ -510,21 +510,21 @@ fn kmgt(bytes: u64) -> String {
         return format!("{bytes} B");
     }
     if bytes < 1024 * 1024 {
-		let mag = 1024;
+        let mag = 1024;
         let f = (bytes % mag) * 10 / mag;
         return format!("{}.{f} kiB", bytes / mag);
     }
     if bytes < 1024 * 1024 * 1024 {
-		let mag = 1024 * 1024;
+        let mag = 1024 * 1024;
         let f = (bytes % mag) * 10 / mag;
         return format!("{}.{f} MiB", bytes / mag);
     }
     if bytes < 1024 * 1024 * 1024 * 1024 {
-		let mag = 1024 * 1024 * 1024;
+        let mag = 1024 * 1024 * 1024;
         let f = (bytes % mag) * 10 / mag;
         return format!("{}.{f} GiB", bytes / mag);
     }
-	let mag = 1024 * 1024 * 1024 * 1024;
+    let mag = 1024 * 1024 * 1024 * 1024;
     let f = (bytes % mag) * 10 / mag;
     format!("{}.{f} TiB", bytes / mag)
 }
@@ -538,8 +538,8 @@ fn full_hash(dir: &PathBuf, name: &str) -> Result<FullHash, std::io::Error> {
     let mut hasher = blake3::Hasher::new();
     let mut file_name = dir.clone();
     file_name.push(name);
-	hasher.update_mmap(file_name)?;
-	Ok(*hasher.finalize().as_bytes())
+    hasher.update_mmap(file_name)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 // type PeekHash has to match digest used in peek_hash()
@@ -720,11 +720,16 @@ fn find_files(
                         continue;
                     }
                     #[cfg(unix)]
-                    let id=metadata.ino() as FileId;
+                    let id = metadata.ino() as FileId;
                     #[cfg(windows)]
-                    let id=0; /* we defer computation of uniq id on windows as it is costly and we only need it for duplicate candidates */
+                    let id = 0; /* we defer computation of uniq id on windows as it is costly and we only need it for duplicate candidates */
                     let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                    let file_info = FileInfo { name, dir_index, size: metadata.len(), id };
+                    let file_info = FileInfo {
+                        name,
+                        dir_index,
+                        size: metadata.len(),
+                        id,
+                    };
                     files.push(file_info);
                 } else if metadata.is_dir() {
                     // recurse here
