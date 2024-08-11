@@ -719,15 +719,12 @@ fn find_files(
                     if metadata.len() < min_size || metadata.len() > max_size {
                         continue;
                     }
-                    let file_info = FileInfo {
-                        name: path.file_name().unwrap().to_string_lossy().into_owned(),
-                        dir_index,
-                        size: metadata.len(),
-                        #[cfg(unix)]
-                        id: metadata.ino() as FileId,
-                        #[cfg(windows)]
-                        id: 0, // we defer computation of uniq id on windows as it is costly and we only need it for duplicate candidates
-                    };
+                    #[cfg(unix)]
+                    let id=metadata.ino() as FileId;
+                    #[cfg(windows)]
+                    let id=0; /* we defer computation of uniq id on windows as it is costly and we only need it for duplicate candidates */
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    let file_info = FileInfo { name, dir_index, size: metadata.len(), id };
                     files.push(file_info);
                 } else if metadata.is_dir() {
                     // recurse here
