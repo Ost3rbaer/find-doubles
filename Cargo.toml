@@ -14,6 +14,7 @@ digest = "0.10.7"
 fastmurmur3 = "0.2.0"
 #fasthash = "0.4.0"
 glob = "0.3.1"
+memmap = "0.7.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.51", features = ["Win32_Storage_FileSystem", "Win32_Foundation"]}

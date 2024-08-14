@@ -1,7 +1,8 @@
 use clap::Parser;
+use memmap::Mmap;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -548,16 +549,12 @@ type PeekHash = u128;
 
 /// compute hash of the first size bytes of file
 fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<PeekHash, std::io::Error> {
-    // fastmurmur3 does not implement digest, hence we read all data in the buffer
-    let mut buffer = Vec::<u8>::with_capacity(size);
-    unsafe { buffer.set_len(size) };
+    // fastmurmur3 does not implement digest, hence we use mmap to provide continuous access
     let mut file_name = dir.clone();
     file_name.push(name);
-    #[cfg(debug_assertions)]
-    println!("computing peek hash of {:?}", file_name);
-    let mut file = File::open(file_name)?;
-    file.read_exact(&mut buffer)?;
-    Ok(fastmurmur3::hash(&buffer))
+    let file = File::open(file_name)?;
+    let buffer = unsafe { Mmap::map(&file)? };
+    Ok(fastmurmur3::hash(&buffer[0..size - 1]))
 }
 
 /// link file1 to file2, replacing file2
@@ -588,9 +585,7 @@ fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> 
     file_name2.push(name2);
     #[cfg(debug_assertions)]
     println!("comparing {:?} and {:?} @{size}", file_name1, file_name2);
-    let buff_size: usize = if size > 65536 { 65536 } else { size as usize };
-    let mut buffer1 = Vec::<u8>::with_capacity(buff_size);
-    let mut buffer2 = Vec::<u8>::with_capacity(buff_size);
+    // play it safe, just pretend the files differ on any error
     let mut file1 = match File::open(file_name1) {
         Ok(stream) => stream,
         _ => {
@@ -603,25 +598,15 @@ fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> 
             return false;
         }
     };
-    let mut pending = size as usize;
-    while pending > 0 {
-        let target_size: usize = if pending > buff_size {
-            buff_size
-        } else {
-            pending
-        };
-        unsafe { buffer1.set_len(target_size) };
-        unsafe { buffer2.set_len(target_size) };
-        _ = file1.read_exact(&mut buffer1);
-        _ = file2.read_exact(&mut buffer2);
-        if buffer1 != buffer2 {
-            return false;
+    unsafe {
+        match Mmap::map(&file1) {
+            Ok(map1) => match Mmap::map(&file2) {
+                Ok(map2) => map1.chunks(65536).eq(map2.chunks(65536)),
+                _ => false,
+            },
+            _ => false,
         }
-        pending -= target_size;
     }
-    #[cfg(debug_assertions)]
-    println!("{} matched", kmgt(size));
-    true
 }
 
 /// provide a replacement for inodes as unique ids on windows
