@@ -232,7 +232,6 @@ fn main() {
                 &files[$file1_i].name,
                 all_dirs.get(files[$file2_i].dir_index).unwrap(),
                 &files[$file2_i].name,
-                files[$file1_i].size,
             ) {
                 process_duplicate!(
                     all_dirs.get(files[$file1_i].dir_index).unwrap(),
@@ -349,7 +348,6 @@ fn main() {
                 &files[runs[0].first].name,
                 all_dirs.get(files[runs[1].first].dir_index).unwrap(),
                 &files[runs[1].first].name,
-                files[refi].size,
             ) {
                 #[cfg(debug_assertions)]
                 println!(
@@ -413,7 +411,6 @@ fn main() {
                         &files[f_ref].name,
                         all_dirs.get(files[runs[i + 1].first].dir_index).unwrap(),
                         &files[runs[i + 1].first].name,
-                        files[f_ref].size,
                     ) {
                         // comparison function ensured that the first run is the longest
                         merge_runs!(f_ref, runs[i + 1].first, runs[i + 1].len);
@@ -547,52 +544,43 @@ fn full_hash(dir: &PathBuf, name: &str) -> Result<FullHash, std::io::Error> {
 // and has to implement Ord, PartialOrd, and Eq for sorting
 type PeekHash = u128;
 
+fn file_name(dir: &PathBuf, name: &str) -> PathBuf {
+    let mut file_name = dir.clone();
+    file_name.push(name);
+    file_name
+}
+
 /// compute hash of the first size bytes of file
 fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<PeekHash, std::io::Error> {
     // fastmurmur3 does not implement digest, hence we use mmap to provide continuous access
-    let mut file_name = dir.clone();
-    file_name.push(name);
-    let file = File::open(file_name)?;
+    let file = File::open(file_name(dir, name))?;
     let buffer = unsafe { Mmap::map(&file)? };
-    Ok(fastmurmur3::hash(&buffer[0..size - 1]))
+    Ok(fastmurmur3::hash(&buffer[0..size]))
 }
 
 /// link file1 to file2, replacing file2
 fn link(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) {
-    let mut file_name1 = dir1.clone();
-    file_name1.push(name1);
-    let mut file_name2 = dir2.clone();
-    file_name2.push(name2);
-    let mut tmp_name2 = dir2.clone();
-    tmp_name2.push(name2.to_owned() + ".dbl");
-    #[cfg(debug_assertions)]
-    println!("linking {:?} -> {:?}", file_name1, file_name2);
-    _ = match fs::hard_link(file_name1, &tmp_name2) {
-        Ok(_) => fs::rename(tmp_name2, file_name2),
+    let file_name2 = file_name(dir2, name2);
+    let tmp_name = file_name(dir2, (name2.to_owned() + ".dbl").as_str());
+    _ = match fs::hard_link(file_name(dir1,name1), &tmp_name) {
+        Ok(_) => fs::rename(tmp_name, file_name2),
         Err(e) => {
-            _ = std::fs::remove_file(tmp_name2);
+            _ = std::fs::remove_file(tmp_name);
             Err(e)
         }
     }
 }
 
 /// compare two files
-// TODO: error handling, consider anyhow
-fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> bool {
-    let mut file_name1 = dir1.clone();
-    file_name1.push(name1);
-    let mut file_name2 = dir2.clone();
-    file_name2.push(name2);
-    #[cfg(debug_assertions)]
-    println!("comparing {:?} and {:?} @{size}", file_name1, file_name2);
-    // play it safe, just pretend the files differ on any error
-    let mut file1 = match File::open(file_name1) {
+/// play it safe, just pretend the files differ on any error
+fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) -> bool {
+    let file1 = match File::open(file_name(dir1, name1)) {
         Ok(stream) => stream,
         _ => {
             return false;
         }
     };
-    let mut file2 = match File::open(file_name2) {
+    let file2 = match File::open(file_name(dir2, name2)) {
         Ok(stream) => stream,
         _ => {
             return false;
@@ -624,12 +612,10 @@ fn windows_id(dir: &PathBuf, name: &str) -> FileId {
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
 
-    let mut full_name = dir.clone();
     let mut buffer = Vec::<u16>::with_capacity(cb_buffer as usize);
     let lp_buffer = PWSTR(buffer.as_mut_ptr());
-    full_name.push(name);
     // that's awful
-    let wide_name: Vec<u16> = OsStr::new(full_name.to_str().unwrap())
+    let wide_name: Vec<u16> = OsStr::new(file_name(dir, name).to_str().unwrap())
         .encode_wide()
         .chain(once(0))
         .collect();
