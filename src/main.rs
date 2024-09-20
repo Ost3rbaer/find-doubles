@@ -62,7 +62,7 @@ struct Args {
 #[cfg(windows)]
 type FileId = u128;
 
-// unix already has the  numerical inode for this which is just 64bit wide
+// unix already has the numerical inode for this which is just 64bit wide
 #[cfg(not(windows))]
 type FileId = u64;
 
@@ -200,7 +200,7 @@ fn main() {
             }
         };
     }
-    // merge tow runs of hard-linked files, all files of $merge_run are linked to $ref_run_start
+    // merge two runs of hard-linked files, all files of $merge_run are linked to $ref_run_start
     macro_rules! merge_runs {
         ($ref_run_start : expr, $merge_run_start : expr, $len : expr) => {
             assert!(files[$ref_run_start].size == files[$merge_run_start].size);
@@ -497,7 +497,7 @@ fn main() {
             full_hash_time,
             kmgt(full_hash_size)
         );
-        println!("merged {merged_files} int {set_merges} existing sets");
+        println!("merged {merged_files} into {set_merges} existing sets");
         println!("Total time spent {:?}", start.elapsed());
     }
 }
@@ -534,9 +534,7 @@ type FullHash = [u8; 32];
 /// compute full hash of file
 fn full_hash(dir: &PathBuf, name: &str) -> Result<FullHash, std::io::Error> {
     let mut hasher = blake3::Hasher::new();
-    let mut file_name = dir.clone();
-    file_name.push(name);
-    hasher.update_mmap(file_name)?;
+    hasher.update_mmap(file_name(dir, name))?;
     Ok(*hasher.finalize().as_bytes())
 }
 
