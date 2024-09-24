@@ -21,7 +21,11 @@ struct Args {
     #[arg(short='M',long, value_name="BYTES", default_value_t = std::u64::MAX)]
     max_size: u64,
 
-    /// Directory to be scanned, can be repeated
+    /// length of initial segment to hash when more than 2 files have the same length
+    #[arg(short = 'H', long, value_name = "BYTES", default_value_t = 4096)]
+    peek_hash: u64,
+
+    /// directory to be scanned, can be repeated
     #[arg(short, long)]
     directories: Vec<PathBuf>,
 
@@ -58,11 +62,11 @@ struct Args {
     link_duplicates: bool,
 }
 
-// under Windows we use a 128bit murmur3 hash to distinguish actual physical files
+// under Windows, we use a 128bit murmur3 hash of the first linked file name to distinguish actual physical files
 #[cfg(windows)]
 type FileId = u128;
 
-// unix already has the numerical inode for this which is just 64bit wide
+// unix already has the numerical inode as unique identifier which is just 64bit wide
 #[cfg(not(windows))]
 type FileId = u64;
 
@@ -223,11 +227,11 @@ fn main() {
         };
     }
     // compare 2 files, hard link them if they match
-    macro_rules! fcmp_link {
+    macro_rules! file_cmp_link {
         ($file1_i : expr, $file2_i : expr) => {
             assert!(files[$file1_i].size == files[$file2_i].size);
             let compare_start = Instant::now();
-            if fcmp(
+            if file_cmp(
                 all_dirs.get(files[$file1_i].dir_index).unwrap(),
                 &files[$file1_i].name,
                 all_dirs.get(files[$file2_i].dir_index).unwrap(),
@@ -256,7 +260,7 @@ fn main() {
                 kmgt(processed_size),
                 kmgt(total_size)
             );
-            _ = std::io::stdout().flush();
+            let _ = std::io::stdout().flush();
             last_file_percent = file_percent;
             last_size_percent = size_percent;
         }
@@ -267,14 +271,17 @@ fn main() {
         }
         sets_with_equals += 1;
         // candidate for duplicate
-        let refi = cur;
+        let ref_index = cur;
         #[cfg(not(windows))]
         {
             cur += 2;
         }
         #[cfg(windows)]
         let link_test_start = Instant::now();
-        while cur <= len_1 && files[cur].size == files[refi].size {
+        while cur <= len_1 && files[cur].size == files[ref_index].size {
+            // we delayed getting the Windows file if (FindFileFirst) until now as this requires
+            // disk access and can be avoided for all files that have no other file(s) with the
+            // same length.
             #[cfg(windows)]
             {
                 files[cur].id = windows_id(
@@ -288,30 +295,30 @@ fn main() {
         {
             link_test_time += link_test_start.elapsed();
         }
-        files_with_equals += cur - refi;
-        processed_size += ((cur - refi) as u64) * files[refi].size;
+        files_with_equals += cur - ref_index;
+        processed_size += ((cur - ref_index) as u64) * files[ref_index].size;
         #[cfg(debug_assertions)]
-        println!("{refi}..{cur}@{:}", files[refi].size);
-        // now files[ref..cur-1] have the same size and their id (inode) is known
+        println!("{ref_index}..{cur}@{:}", files[ref_index].size);
+        // now files[ref .. cur-1] have the same size and their id (inode or first file name) is known
         // sort that range by id (inode)
         files
-            .get_mut(refi..cur)
+            .get_mut(ref_index..cur)
             .unwrap()
             .sort_unstable_by_key(|f| f.id);
-        if files[refi].id == files[cur - 1].id {
+        if files[ref_index].id == files[cur - 1].id {
             fully_linked += 1;
-            old_link_save += ((cur - refi - 1) as u64) * files[refi].size;
+            old_link_save += ((cur - ref_index - 1) as u64) * files[ref_index].size;
             #[cfg(debug_assertions)]
-            println!("run {refi}..{cur} is fully linked");
+            println!("run {ref_index}..{cur} is fully linked");
             continue;
         }
-        if cur - refi == 2 {
+        if cur - ref_index == 2 {
             #[cfg(debug_assertions)]
             println!("set of 2");
             // just 2 files
             // direct compare
             set_of_2 += 1;
-            fcmp_link!(cur - 1, refi);
+            file_cmp_link!(cur - 1, ref_index);
             continue;
         }
         // group runs of same file id (inode)
@@ -322,8 +329,8 @@ fn main() {
             peek_hash: u128,
         }
         let mut runs: Vec<FileRun> = Vec::new();
-        let mut run_start = refi;
-        for i in refi..cur {
+        let mut run_start = ref_index;
+        for i in ref_index..cur {
             if files[i].id != files[run_start].id {
                 runs.push(FileRun {
                     first: run_start,
@@ -343,7 +350,7 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("2 runs of same inode");
             let compare_start = Instant::now();
-            if fcmp(
+            if file_cmp(
                 all_dirs.get(files[runs[0].first].dir_index).unwrap(),
                 &files[runs[0].first].name,
                 all_dirs.get(files[runs[1].first].dir_index).unwrap(),
@@ -373,28 +380,22 @@ fn main() {
             r.peek_hash = match peek_hash(
                 all_dirs.get(files[r.first].dir_index).unwrap(),
                 &files[r.first].name,
-                if files[r.first].size > 4096 {
-                    4096
+                if files[r.first].size > args.peek_hash {
+                    args.peek_hash
                 } else {
-                    files[r.first].size as usize
+                    files[r.first].size
                 },
             ) {
                 Ok(hash) => hash,
                 _ => 0,
             }
         });
-        runs.sort_unstable_by(|a, b| {
-            if a.peek_hash == b.peek_hash {
-                b.len.cmp(&a.len)
-            } else {
-                a.peek_hash.cmp(&b.peek_hash)
-            }
-        });
+        runs.sort_unstable_by(|a, b| a.peek_hash.cmp(&b.peek_hash));
         peek_hash_time += hash_start.elapsed();
         // identify runs of same peek_hash
         let len_1 = runs.len() - 1;
         let mut i = 0;
-        // skip runs with  hashes that could not be computed due to i/o errors
+        // skip runs with hashes that could not be computed due to i/o errors
         while i < len_1 && runs[i].peek_hash == 0 {
             i += 1;
         }
@@ -406,7 +407,7 @@ fn main() {
                     // just 2 runs with the same peek_hash -> direct compare
                     let f_ref = runs[i].first;
                     let compare_start = Instant::now();
-                    if fcmp(
+                    if file_cmp(
                         all_dirs.get(files[f_ref].dir_index).unwrap(),
                         &files[f_ref].name,
                         all_dirs.get(files[runs[i + 1].first].dir_index).unwrap(),
@@ -432,6 +433,7 @@ fn main() {
                 let full_hash_start = Instant::now();
                 while i <= len_1 && runs[i].peek_hash == ref_hash {
                     full_hash_size += files[runs[i].first].size;
+                    full_hashes += 1;
                     match full_hash(
                         all_dirs.get(files[runs[i].first].dir_index).unwrap(),
                         &files[runs[i].first].name,
@@ -446,7 +448,6 @@ fn main() {
 
                     i += 1;
                 }
-                full_hashes += 1;
                 full_hash_time += full_hash_start.elapsed();
                 if run_runs.len() > 1 {
                     // need stable sort here to keep longest run first
@@ -456,13 +457,13 @@ fn main() {
                     // let's merge them
                     //println!("{:?}", run_runs);
                     let mut i = 1;
-                    let mut refi = 0;
+                    let mut run_index = 0;
                     while i < run_runs.len() {
-                        while i < run_runs.len() && run_runs[i].hash == run_runs[refi].hash {
-                            merge_runs!(run_runs[refi].first, run_runs[i].first, run_runs[i].len);
+                        while i < run_runs.len() && run_runs[i].hash == run_runs[run_index].hash {
+                            merge_runs!(run_runs[run_index].first, run_runs[i].first, run_runs[i].len);
                             i += 1;
                         }
-                        refi = i;
+                        run_index = i;
                         i += 1;
                     }
                 }
@@ -471,7 +472,11 @@ fn main() {
         }
     }
     // skip progress report line
-    println!();
+    println!(
+        "progress: {} files, {} data                                                 ",
+        cur + 1,
+        kmgt(total_size)
+    );
     if args.timings {
         #[cfg(windows)]
         println!("spent {:?} to get unique file ids", link_test_time);
@@ -480,10 +485,17 @@ fn main() {
             "{fully_linked} sets were already linked, saving {}",
             kmgt(old_link_save)
         );
-        println!(
-            "{set_of_2} pairs compared, created {linked} new links saving {}",
-            kmgt(new_link_save)
-        );
+        if args.link_duplicates {
+            println!(
+                "{set_of_2} pairs compared, created {linked} new links saving {}",
+                kmgt(new_link_save)
+            );
+        } else {
+            println!(
+                "{set_of_2} pairs compared, linking would save {}",
+                kmgt(new_link_save)
+            );
+        }
         println!(
             "spent {:?} comparing {file_compares} file pairs",
             compare_time
@@ -497,7 +509,9 @@ fn main() {
             full_hash_time,
             kmgt(full_hash_size)
         );
-        println!("merged {merged_files} into {set_merges} existing sets");
+        if merged_files > 0 {
+            println!("merged {merged_files} files into {set_merges} existing sets");
+        }
         println!("Total time spent {:?}", start.elapsed());
     }
 }
@@ -549,29 +563,29 @@ fn file_name(dir: &PathBuf, name: &str) -> PathBuf {
 }
 
 /// compute hash of the first size bytes of file
-fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<PeekHash, std::io::Error> {
-    // fastmurmur3 does not implement digest, hence we use mmap to provide continuous access
+fn peek_hash(dir: &PathBuf, name: &str, size: u64) -> Result<PeekHash, std::io::Error> {
+    // fast murmur3 crate does not implement digest, hence we use memory mapping to provide continuous access
     let file = File::open(file_name(dir, name))?;
     let buffer = unsafe { Mmap::map(&file)? };
-    Ok(fastmurmur3::hash(&buffer[0..size]))
+    Ok(fastmurmur3::hash(&buffer[0..(size as usize)]))
 }
 
 /// link file1 to file2, replacing file2
+// to protect against weird permission errors on Windows we first try
+// to create a temporary file in the same directory and then replace the target with rename
 fn link(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) {
     let file_name2 = file_name(dir2, name2);
     let tmp_name = file_name(dir2, (name2.to_owned() + ".dbl").as_str());
-    _ = match fs::hard_link(file_name(dir1,name1), &tmp_name) {
-        Ok(_) => fs::rename(tmp_name, file_name2),
-        Err(e) => {
-            _ = std::fs::remove_file(tmp_name);
-            Err(e)
-        }
+    if let Ok(_) = fs::hard_link(file_name(dir1, name1), &tmp_name) {
+        let _ = fs::rename(tmp_name, file_name2);
+    } else {
+        let _ = fs::remove_file(tmp_name);
     }
 }
 
 /// compare two files
 /// play it safe, just pretend the files differ on any error
-fn fcmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) -> bool {
+fn file_cmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) -> bool {
     let file1 = match File::open(file_name(dir1, name1)) {
         Ok(stream) => stream,
         _ => {
@@ -626,7 +640,7 @@ fn windows_id(dir: &PathBuf, name: &str) -> FileId {
         )
     } {
         Ok(handle) => {
-            _ = unsafe { FindClose(handle) };
+            let _ = unsafe { FindClose(handle) };
             let buffer = unsafe { std::slice::from_raw_parts(lp_buffer.0, cb_buffer as usize - 1) };
             let len = buffer.len().checked_mul(2).unwrap();
             let ptr: *const u8 = buffer.as_ptr().cast();
@@ -691,7 +705,7 @@ fn find_files(
                     #[cfg(unix)]
                     let id = metadata.ino() as FileId;
                     #[cfg(windows)]
-                    let id = 0; /* we defer computation of uniq id on windows as it is costly and we only need it for duplicate candidates */
+                    let id = 0; /* we defer computation of uniq id on windows as it is costly, and we only need it for duplicate candidates */
                     let name = path.file_name().unwrap().to_string_lossy().into_owned();
                     let file_info = FileInfo {
                         name,
