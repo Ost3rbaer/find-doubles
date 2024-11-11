@@ -1,8 +1,7 @@
 use clap::Parser;
-use memmap::Mmap;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -77,14 +76,15 @@ fn main() {
         // a couple of files/dirs to exclude on Windows platforms by default
         // the windows directory is full of shadow copies, won't save anything and might mess with the OS
         if args.exclude_dirs.is_empty() {
-            args.exclude_dirs
-                .push(glob::Pattern::new("WINDOWS").unwrap());
+            for pattern in ["WINDOWS", "WpSystem", "WindowsApps", "WUDownloadCache"] {
+                args.exclude_dirs.push(glob::Pattern::new(pattern).unwrap());
+            }
         }
         // GOG uninstallers have a stupid locking mechanism that cause a +deadlock during
         // uninstall when hard linked
         if args.exclude_files.is_empty() {
             args.exclude_files
-                .push(glob::Pattern::new("unins*").unwrap());
+                .push(glob::Pattern::new("unins000.exe").unwrap());
             args.exclude_files.push(glob::Pattern::new("*.db").unwrap());
         }
     }
@@ -123,7 +123,7 @@ fn main() {
     }
     let scan_duration = start.elapsed();
     let sort_start = Instant::now();
-    files.sort_unstable_by_key(|file| file.size);
+    files.sort_by_key(|file| file.size);
     let sort_duration = sort_start.elapsed();
     if args.print_files {
         for file in &files {
@@ -236,6 +236,7 @@ fn main() {
                 &files[$file1_i].name,
                 all_dirs.get(files[$file2_i].dir_index).unwrap(),
                 &files[$file2_i].name,
+                files[$file1_i].size,
             ) {
                 process_duplicate!(
                     all_dirs.get(files[$file1_i].dir_index).unwrap(),
@@ -250,7 +251,7 @@ fn main() {
         };
     }
     while cur < len_1 {
-        // TODO: improve progress reporting, search on crates.io
+        // TO DO: improve progress reporting, search on crates.io
         let file_percent = 100 * cur / len_1;
         let size_percent = 100 * processed_size / total_size;
         if file_percent != last_file_percent || size_percent != last_size_percent {
@@ -279,7 +280,7 @@ fn main() {
         #[cfg(windows)]
         let link_test_start = Instant::now();
         while cur <= len_1 && files[cur].size == files[ref_index].size {
-            // we delayed getting the Windows file if (FindFileFirst) until now as this requires
+            // we delayed getting the Windows file id (FindFileFirst) until now as this requires
             // disk access and can be avoided for all files that have no other file(s) with the
             // same length.
             #[cfg(windows)]
@@ -301,10 +302,7 @@ fn main() {
         println!("{ref_index}..{cur}@{:}", files[ref_index].size);
         // now files[ref .. cur-1] have the same size and their id (inode or first file name) is known
         // sort that range by id (inode)
-        files
-            .get_mut(ref_index..cur)
-            .unwrap()
-            .sort_unstable_by_key(|f| f.id);
+        files.get_mut(ref_index..cur).unwrap().sort_by_key(|f| f.id);
         if files[ref_index].id == files[cur - 1].id {
             fully_linked += 1;
             old_link_save += ((cur - ref_index - 1) as u64) * files[ref_index].size;
@@ -355,6 +353,7 @@ fn main() {
                 &files[runs[0].first].name,
                 all_dirs.get(files[runs[1].first].dir_index).unwrap(),
                 &files[runs[1].first].name,
+                files[runs[0].first].size,
             ) {
                 #[cfg(debug_assertions)]
                 println!(
@@ -381,16 +380,16 @@ fn main() {
                 all_dirs.get(files[r.first].dir_index).unwrap(),
                 &files[r.first].name,
                 if files[r.first].size > args.peek_hash {
-                    args.peek_hash
+                    args.peek_hash as usize
                 } else {
-                    files[r.first].size
+                    files[r.first].size as usize
                 },
             ) {
                 Ok(hash) => hash,
                 _ => 0,
             }
         });
-        runs.sort_unstable_by(|a, b| a.peek_hash.cmp(&b.peek_hash));
+        runs.sort_by(|a, b| a.peek_hash.cmp(&b.peek_hash));
         peek_hash_time += hash_start.elapsed();
         // identify runs of same peek_hash
         let len_1 = runs.len() - 1;
@@ -412,6 +411,7 @@ fn main() {
                         &files[f_ref].name,
                         all_dirs.get(files[runs[i + 1].first].dir_index).unwrap(),
                         &files[runs[i + 1].first].name,
+                        files[f_ref].size,
                     ) {
                         // comparison function ensured that the first run is the longest
                         merge_runs!(f_ref, runs[i + 1].first, runs[i + 1].len);
@@ -460,7 +460,11 @@ fn main() {
                     let mut run_index = 0;
                     while i < run_runs.len() {
                         while i < run_runs.len() && run_runs[i].hash == run_runs[run_index].hash {
-                            merge_runs!(run_runs[run_index].first, run_runs[i].first, run_runs[i].len);
+                            merge_runs!(
+                                run_runs[run_index].first,
+                                run_runs[i].first,
+                                run_runs[i].len
+                            );
                             i += 1;
                         }
                         run_index = i;
@@ -562,12 +566,15 @@ fn file_name(dir: &PathBuf, name: &str) -> PathBuf {
     file_name
 }
 
-/// compute hash of the first size bytes of file
-fn peek_hash(dir: &PathBuf, name: &str, size: u64) -> Result<PeekHash, std::io::Error> {
-    // fast murmur3 crate does not implement digest, hence we use memory mapping to provide continuous access
-    let file = File::open(file_name(dir, name))?;
-    let buffer = unsafe { Mmap::map(&file)? };
-    Ok(fastmurmur3::hash(&buffer[0..(size as usize)]))
+fn peek_hash(dir: &PathBuf, name: &str, size: usize) -> Result<PeekHash, std::io::Error> {
+    // fastmurmur3 does not implement digest, hence we read all data in the buffer
+    let mut buffer = Vec::<u8>::with_capacity(size);
+    unsafe { buffer.set_len(size) };
+    #[cfg(debug_assertions)]
+    println!("computing peek hash of {:?}", file_name(dir, name));
+    let mut file = File::open(file_name(dir, name))?;
+    file.read_exact(&mut buffer)?;
+    Ok(fastmurmur3::hash(&buffer))
 }
 
 /// link file1 to file2, replacing file2
@@ -576,37 +583,62 @@ fn peek_hash(dir: &PathBuf, name: &str, size: u64) -> Result<PeekHash, std::io::
 fn link(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) {
     let file_name2 = file_name(dir2, name2);
     let tmp_name = file_name(dir2, (name2.to_owned() + ".dbl").as_str());
+    #[cfg(debug_assertions)]
+    println!("{:?}/{name1} -> {:?}", dir1, tmp_name);
     if let Ok(_) = fs::hard_link(file_name(dir1, name1), &tmp_name) {
+        #[cfg(debug_assertions)]
+        println!("{:?} -> {:?}", tmp_name, file_name2);
         let _ = fs::rename(tmp_name, file_name2);
     } else {
+        #[cfg(debug_assertions)]
+        println!("unlink {:?}", tmp_name);
         let _ = fs::remove_file(tmp_name);
     }
 }
 
 /// compare two files
 /// play it safe, just pretend the files differ on any error
-fn file_cmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str) -> bool {
-    let file1 = match File::open(file_name(dir1, name1)) {
+fn file_cmp(dir1: &PathBuf, name1: &str, dir2: &PathBuf, name2: &str, size: u64) -> bool {
+    #[cfg(debug_assertions)]
+    println!(
+        "comparing {:?} and {:?} @{size}",
+        file_name(dir1, name1),
+        file_name(dir2, name2)
+    );
+    let buff_size: usize = if size > 65536 { 65536 } else { size as usize };
+    let mut buffer1 = Vec::<u8>::with_capacity(buff_size);
+    let mut buffer2 = Vec::<u8>::with_capacity(buff_size);
+    let mut file1 = match File::open(file_name(dir1, name1)) {
         Ok(stream) => stream,
         _ => {
             return false;
         }
     };
-    let file2 = match File::open(file_name(dir2, name2)) {
+    let mut file2 = match File::open(file_name(dir2, name2)) {
         Ok(stream) => stream,
         _ => {
             return false;
         }
     };
-    unsafe {
-        match Mmap::map(&file1) {
-            Ok(map1) => match Mmap::map(&file2) {
-                Ok(map2) => map1.chunks(65536).eq(map2.chunks(65536)),
-                _ => false,
-            },
-            _ => false,
+    let mut pending = size as usize;
+    while pending > 0 {
+        let target_size: usize = if pending > buff_size {
+            buff_size
+        } else {
+            pending
+        };
+        unsafe { buffer1.set_len(target_size) };
+        unsafe { buffer2.set_len(target_size) };
+        _ = file1.read_exact(&mut buffer1);
+        _ = file2.read_exact(&mut buffer2);
+        if buffer1 != buffer2 {
+            return false;
         }
+        pending -= target_size;
     }
+    #[cfg(debug_assertions)]
+    println!("{} matched", kmgt(size));
+    true
 }
 
 /// provide a replacement for inodes as unique ids on windows
@@ -673,7 +705,6 @@ fn find_files(
 ) {
     if let Ok(entries) = fs::read_dir(dir) {
         let dir_index = all_dirs.len();
-        // TODO: postpone saving of directory path on stack, only store it when we also store files
         // requires BFS which we can't guarantee
         all_dirs.push(dir.clone());
 

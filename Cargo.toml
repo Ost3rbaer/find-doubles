@@ -1,15 +1,9 @@
 [package]
 name = "find_doubles"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 authors = ["Christian Kumpf"]
 description = "find duplicate files and optionally replace duplicates by hard links"
-license = "RPL-1.5"
-homepage = "https://github.com/Ost3rbaer/find-doubles"
-repostory = "https://github.com/Ost3rbaer/find-doubles.git"
-readme = true
-keywords = ["duplicates", "files", "steamdeck", "windows", "linux"]
-categories = ["command-line-utilities"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,8 +12,9 @@ blake3 = { version ="1.5.1", features = ["mmap"] }
 clap = { version="4.3.21", features = ["derive"] }
 digest = "0.10.7"
 fastmurmur3 = "0.2.0"
+#fasthash = "0.4.0"
 glob = "0.3.1"
-memmap = "0.7.0"
+#memmap = "0.7.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.51", features = ["Win32_Storage_FileSystem", "Win32_Foundation"]}
